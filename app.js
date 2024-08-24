@@ -1,51 +1,40 @@
 import express from "express";
 import "dotenv/config";
 import "express-async-errors";
-
-// Dev Library
+import csrf from "csurf";
+import cookieParser from "cookie-parser";
 import morgan from "morgan";
-
-// CORS
-import rateLimiter from "express-rate-limit";
-import helmet from "helmet";
-import xss from "xss-clean";
-import cors from "cors";
+import { security } from "./middlewares/index.js";
+import { PORT } from "./config.js";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.set("trust proxy", 1);
-app.use(
-    rateLimiter({
-        windowMs: 15 * 60 * 1000,
-        max: 120,
-    })
-);
-app.use(
-    helmet({
-        contentSecurityPolicy: {
-            directives: {
-                ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-                'img-src': ["'self'", 'res.cloudinary.com', 'data:'],
-            },
-        },
-    })
-);
-
-app.use(cors());
-app.use(xss());
+app.use(security);
 
 app.use(morgan("tiny"));
 
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+app.use(cookieParser());
 
+const csrfProtection = csrf({ cookie: true });
 
+app.use(csrfProtection);
+
+app.use((req, res, next) => {
+    res.locals.csrfToken = req.csrfToken();
+    next();
+});
+
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ message: 'Something went wrong!' });
+});
 
 async function startApp() {
     try {
         app.listen(PORT, () => {
-            console.log("Server was started");
+            console.log(`Server is running on port ${PORT}`);
         });
     } catch (error) {
         console.log(error);
@@ -53,6 +42,3 @@ async function startApp() {
 }
 
 startApp();
-
-
-  
