@@ -7,9 +7,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Observer {
+  id        String @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  schedule  String
+  productId String @db.ObjectId
+  rivalId   String @db.ObjectId
+}
+
+model Rival {
+  id         String  @id @default(auto()) @map("_id") @db.ObjectId
+  selector   String
+  link       String  @unique
+  price      String
+  observerId String? @db.ObjectId
+}
+
 model Product {
-  id   String @id @default(auto()) @map("_id") @db.ObjectId
-  name String
-  price String
-  listOfRival String[]
-} 
+  id         String  @id @default(auto()) @map("_id") @db.ObjectId
+  handle     String
+  name       String
+  price      String
+  observerId String? @db.ObjectId
+}
