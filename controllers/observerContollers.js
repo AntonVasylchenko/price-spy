@@ -51,6 +51,22 @@ class ObserverHelper {
             where: { id }
         });
     }
+
+    createPagination({ take = 1, page = 1 }, totalCount) {
+        const itemsPerPage = Number(take);
+        const currentPage = Number(page);
+        const skipItems = (currentPage - 1) * itemsPerPage;
+        const totalPages = Math.ceil(totalCount / itemsPerPage);
+
+        return {
+            take: itemsPerPage,
+            skip: skipItems,
+            totalItems: totalCount,
+            currentPage,
+            totalPages,
+        };
+    }
+
 }
 
 const observerHelper = new ObserverHelper();
@@ -120,6 +136,9 @@ async function readObserver(req, res) {
 }
 
 async function readAllObserver(req, res) {
+    const count = await prisma.observer.count();
+    const { take, skip, totalItems, currentPage, totalPages } = observerHelper.createPagination(req.query, count);
+
     async function getExtraCollection(observer) {
         const { productId, rivalId } = observer
 
@@ -133,13 +152,17 @@ async function readAllObserver(req, res) {
         };
     }
 
-    const observers = await prisma.observer.findMany();
+    const observers = await prisma.observer.findMany({ take, skip });
 
     const observersWithDetails = await Promise.all(observers.map(getExtraCollection));
 
     res.status(StatusCodes.OK).json({
         msg: "Observers retrieved successfully",
-        observers: observersWithDetails
+        observers: observersWithDetails,
+        currentItems: observersWithDetails.length,
+        currentPage,
+        totalItems,
+        totalPages
     });
 }
 
