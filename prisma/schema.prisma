@@ -20,6 +20,7 @@ model Rival {
   selector   String
   link       String  @unique
   price      String
+  currency   String
   observerId String? @db.ObjectId
 }
 
@@ -28,5 +29,7 @@ model Product {
   handle     String
   name       String
   price      String
+  shopifyId  String
+  currency   String
   observerId String? @db.ObjectId
 }
