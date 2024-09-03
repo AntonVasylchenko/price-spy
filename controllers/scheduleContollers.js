@@ -1,105 +1,102 @@
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient } from '@prisma/client';
 import customError from "../errors/index.js";
 import StatusCodes from "http-status-codes";
-
 import axios from 'axios';
 import { parse } from 'node-html-parser';
-
 import cron from "node-cron";
-
-import CurrencyConverter from "currency-converter-lt"
+import CurrencyConverter from "currency-converter-lt";
 import { shopify, session } from '../shopify/shopify.js';
 
 const client = new shopify.clients.Graphql({ session });
-
 const prisma = new PrismaClient();
-
 const tasks = {};
 
 async function fetchData(url, selector) {
-    const response = await axios.get(url);
-    const html = response.data;
-
-    const root = parse(html);
-    const element = root.querySelector(selector);
-
-    return element ? element.text : null;
+    try {
+        const response = await axios.get(url);
+        const root = parse(response.data);
+        const element = root.querySelector(selector);
+        return element ? element.text.trim() : null;
+    } catch (error) {
+        throw new customError.BadRequestError('Failed to fetch data from URL');
+    }
 }
 
-async function convertCurrency(rivalCurrency, productCurrency, currentPriceRival) {
-    let currencyConverter = new CurrencyConverter({
-        from: rivalCurrency,
-        to: productCurrency,
-        amount: currentPriceRival
-    });
+async function convertCurrency(fromCurrency, toCurrency, amount) {
+    const currencyConverter = new CurrencyConverter({ from: fromCurrency, to: toCurrency, amount });
+    try {
+        return await currencyConverter.convert();
+    } catch (error) {
+        throw new customError.InternalServerError('Currency conversion failed');
+    }
+}
+
+async function monitorPrice(scheduleObject) {
+    const fetchedPrice = await fetchData(scheduleObject.rivalLink, scheduleObject.htmlSelector);
+    if (!fetchedPrice) throw new customError.BadRequestError('Failed to fetch rival price');
+
+    const currentPriceRival = parseFloat(fetchedPrice);
+    const oldPriceRival = parseFloat(scheduleObject.rivalPrice) + 20;
+
+    if (currentPriceRival !== oldPriceRival) {
+        const convertedPrice = await convertCurrency(scheduleObject.rivalCurrency, scheduleObject.productCurrency, currentPriceRival);
+        const newPrice = (convertedPrice).toFixed(2);
+
+        await updateShopifyProductPrice(scheduleObject.productId, newPrice);
+        await updateProductInDB(scheduleObject.productModelId, newPrice);
+
+        console.log("Price was changed successfully");
+    }
+}
+
+async function updateShopifyProductPrice(variantId, newPrice) {
+    const mutation = `
+        mutation updateProductVariantMetafields($input: ProductVariantInput!) {
+            productVariantUpdate(input: $input) {
+                productVariant {
+                    id
+                    price
+                }
+                userErrors {
+                    message
+                    field
+                }
+            }
+        }`;
+
+    const variables = {
+        input: {
+            id: `gid://shopify/ProductVariant/${variantId}`,
+            price: newPrice,
+        }
+    };
 
     try {
-        let response = await currencyConverter.convert();
-        return response; // Виведе конвертовану суму в доларах
+        await client.request(mutation, { variables });
     } catch (error) {
-        console.error('Помилка конвертації валюти:', error);
+        throw new customError.InternalServerError('Failed to update Shopify product price');
     }
 }
 
-async function observerPrice(scheduleObject) {
-    const price = await fetchData(scheduleObject.rivalLink, scheduleObject.htmlSelector);
-
-    const currentPriceRival = parseInt(price) + 1;
-    const oldPriceRival = parseInt(scheduleObject.rivalPrice);
-    if (currentPriceRival !== oldPriceRival) {
-        const { rivalCurrency, productCurrency } = scheduleObject
-
-        const newPrice = String(await convertCurrency(rivalCurrency, productCurrency, currentPriceRival))
-
-        const variantId = `gid://shopify/ProductVariant/${scheduleObject.productId}`;
-
-        const mutation = `mutation updateProductVariantMetafields($input: ProductVariantInput!) {
-            productVariantUpdate (input: $input) {
-              productVariant {
-                  id
-                  price
-              }
-              userErrors {
-                  message
-                  field
-              }
-            }
-          }`
-
-        const variables = {
-            variables: {
-                input: {
-                    id: variantId,
-                    price: newPrice + 10
-                }
-            },
-        };
-
-
-
-        await client.request(mutation, variables);
-
+async function updateProductInDB(productModelId, newPrice) {
+    try {
         await prisma.product.update({
-            where: {
-                id: scheduleObject.productModelId
-            },
-            data: {
-                price: newPrice
-            }
-        })
-
-        console.log("Price was changed successfuly");
-
+            where: { id: productModelId },
+            data: { price: newPrice }
+        });
+    } catch (error) {
+        throw new customError.InternalServerError('Failed to update product price in the database');
     }
 }
 
-async function createScheduleObject(observerId) {
-    const observer = await prisma.observer.findUnique({ where: { id: observerId } });
-    const product = await prisma.product.findUnique({ where: { id: observer.productId } });
-    const rival = await prisma.rival.findUnique({ where: { id: observer.rivalId } });
+async function createScheduleObject(productId, rivalId) {
 
-    const scheduleObject = {
-        time: observer.schedule,
+    const product = await prisma.product.findUnique({ where: { id: productId } });
+    const rival = await prisma.rival.findUnique({ where: { id: rivalId } });
+
+    if (!product || !rival) throw new customError.BadRequestError('Related product or rival not found');
+
+    return {
         productHandle: product.handle,
         productId: product.shopifyId,
         productPrice: product.price,
@@ -109,50 +106,55 @@ async function createScheduleObject(observerId) {
         rivalLink: rival.link,
         rivalCurrency: rival.currency,
         htmlSelector: rival.selector
-    }
-
-    console.log(product);
-    return scheduleObject
+    };
 }
 
-
 async function startSchedule(req, res) {
-    const idTask = new Date().getTime();
-    const { id } = req.body;
+    const { id: observerId } = req.body;
+    const observer = await prisma.observer.findUnique({ where: { id: observerId } });
+    if (!observer) throw new customError.BadRequestError('Observer not found');
 
-    const task = cron.schedule('*/10 * * * * *', async () => {
-        console.log(132);
+    const { productId, rivalId, schedule } = observer;
+
+    const taskId = Date.now();
+
+
+    console.log(schedule);
+    
+    const task = cron.schedule(schedule, async () => {
         try {
-            const scheduleObject = await createScheduleObject(id)
-            await observerPrice(scheduleObject)
-            console.log('running a task every 10 second');
+            const scheduleObject = await createScheduleObject(productId, rivalId);
+            await monitorPrice(scheduleObject);
+            console.log('Running a task every 10 seconds' + observerId);
         } catch (error) {
-            console.log(error);
+            console.error(error);
             task.stop();
         }
     });
 
-    tasks[idTask] = task
-
-    console.log(idTask);
+    tasks[taskId] = task;
 
     res.status(StatusCodes.OK).json({
-        msg: "Start schedule"
+        msg: "Schedule started",
+        taskId
     });
 }
+
 async function stopSchedule(req, res) {
-    const { id: idTask } = req.body
+    const { id: taskId } = req.body;
 
-    tasks[idTask].stop()
-
-    res.status(StatusCodes.OK).json({
-        msg: "Stop schedule"
-    });
+    if (tasks[taskId]) {
+        tasks[taskId].stop();
+        delete tasks[taskId];
+        res.status(StatusCodes.OK).json({ msg: "Schedule stopped" });
+    } else {
+        res.status(StatusCodes.NOT_FOUND).json({ msg: "Task not found" });
+    }
 }
 
-const scheduleContollers = {
+const scheduleControllers = {
     start: startSchedule,
     stop: stopSchedule,
-}
+};
 
-export default scheduleContollers
+export default scheduleControllers;
