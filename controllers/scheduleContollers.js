@@ -118,9 +118,6 @@ async function startSchedule(req, res) {
 
     const taskId = Date.now();
 
-
-    console.log(schedule);
-    
     const task = cron.schedule(schedule, async () => {
         try {
             const scheduleObject = await createScheduleObject(productId, rivalId);
@@ -152,7 +149,23 @@ async function stopSchedule(req, res) {
     }
 }
 
+async function checkSchedule(req, res) {
+    const { link, selector } = req.body;
+    
+    if (!link) {
+        throw new customError.BadRequestError('Please provide link');
+    }
+    if (!selector) {
+        throw new customError.BadRequestError('Please provide selector');
+    }
+    const fetchedPrice = await fetchData(link,selector);
+    if (!fetchedPrice) throw new customError.BadRequestError('Link is not valid');
+
+    res.status(StatusCodes.OK).json({ msg: "Link is correct" });
+}
+
 const scheduleControllers = {
+    check: checkSchedule,
     start: startSchedule,
     stop: stopSchedule,
 };
