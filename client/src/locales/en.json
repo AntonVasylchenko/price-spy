@@ -1,0 +1,11 @@
+{
+    "menu": {
+        "all": "All",
+        "create": "Create",
+        "settings": "Settings"
+    },
+    "settings": {
+        "color": "Color mode",
+        "lang": "Language"
+    }
+}

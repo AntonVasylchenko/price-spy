@@ -7,6 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Admin {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+  languge String
+  mode String
+}
+
 model Observer {
   id        String @id @default(auto()) @map("_id") @db.ObjectId
   name      String
